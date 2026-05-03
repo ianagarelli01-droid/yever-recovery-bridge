@@ -11,10 +11,10 @@ let job = null;
 
 /**
  * Start the recovery job
- * Runs every 5 minutes by default (can be adjusted)
+ * Runs every 60 minutes by default (1x per hour) - can be adjusted via JOB_INTERVAL_MINUTES env var
  * Looks for checkouts and sends templates based on abandonment time
  */
-function startRecoveryJob(intervalMinutes = 5) {
+function startRecoveryJob(intervalMinutes = 60) {
   if (job) {
     console.log('[recovery-job] Job já está rodando');
     return;

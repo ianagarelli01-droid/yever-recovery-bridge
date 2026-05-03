@@ -259,8 +259,8 @@ function bootstrap() {
     db.initDb();
     console.log('[bootstrap] ✓ Database initialized');
 
-    // Start recovery job
-    const jobInterval = parseInt(process.env.JOB_INTERVAL_MINUTES || '5', 10);
+    // Start recovery job (1x per hour by default)
+    const jobInterval = parseInt(process.env.JOB_INTERVAL_MINUTES || '60', 10);
     startRecoveryJob(jobInterval);
 
     // Start server
