@@ -54,13 +54,30 @@ async function sendRecoveryTemplate(params) {
   try {
     console.log(`${logPrefix} Enviando template de recuperação...`);
 
+    // Payload conforme documentação oficial Octadesk
     const payload = {
-      phone,
-      name: customerName,
-      templateName: templateId,
-      variables: [customerName, checkoutUrl],
-      singleDest: true,
-      origemPhone: originPhone
+      origin: {
+        contact: {
+          channel: 'whatsapp',
+          code: originPhone
+        }
+      },
+      target: {
+        contact: {
+          channel: 'whatsapp',
+          code: phone,
+          name: customerName
+        }
+      },
+      content: {
+        templateMessage: {
+          id: templateId,
+          variables: [customerName, checkoutUrl]
+        }
+      },
+      options: {
+        automaticAssign: false
+      }
     };
 
     console.log(`${logPrefix} Payload: ${JSON.stringify(payload)}`);

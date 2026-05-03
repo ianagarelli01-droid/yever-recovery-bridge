@@ -87,12 +87,18 @@ async function processCheckoutForRecovery(checkout) {
       return;
     }
 
+    console.log(`${logPrefix} ✓ Validação passou`);
+
     // Normalize phone to E.164
     const phoneE164 = normalizePhoneBR(checkout.customer_phone);
+    console.log(`${logPrefix} Telefone normalizado: ${checkout.customer_phone} -> ${phoneE164}`);
+
     if (!phoneE164 || !isValidE164(phoneE164)) {
-      console.log(`${logPrefix} ⏭️  Telefone inválido: ${checkout.customer_phone}`);
+      console.log(`${logPrefix} ⏭️  Telefone inválido após normalização`);
       return;
     }
+
+    console.log(`${logPrefix} ✓ Telefone válido`);
 
     // Check for more recent checkout from same email/phone
     const moreRecent = await db.findMostRecentCheckoutByEmailOrPhone(
@@ -105,17 +111,31 @@ async function processCheckoutForRecovery(checkout) {
       return;
     }
 
+    console.log(`${logPrefix} ✓ Nenhum checkout mais recente`);
+
     // Send recovery message
     console.log(`${logPrefix} 📤 Enviando mensagem de recuperação...`);
+    console.log(`${logPrefix} Parâmetros: phone=${phoneE164}, name=${checkout.customer_name}, url=${checkout.recovery_url}`);
 
     const dryRun = process.env.DRY_RUN === 'true';
-    const response = await sendRecoveryTemplate({
-      phone: phoneE164,
-      checkoutUrl: checkout.recovery_url,
-      customerName: checkout.customer_name,
-      checkoutId: checkout.yever_checkout_id,
-      dryRun
-    });
+    console.log(`${logPrefix} DRY_RUN=${dryRun}`);
+
+    let response;
+    try {
+      response = await sendRecoveryTemplate({
+        phone: phoneE164,
+        checkoutUrl: checkout.recovery_url,
+        customerName: checkout.customer_name,
+        checkoutId: checkout.yever_checkout_id,
+        dryRun
+      });
+    } catch (sendError) {
+      console.error(`${logPrefix} ❌ Exceção ao chamar sendRecoveryTemplate:`, sendError.message);
+      console.error(`${logPrefix} Stack:`, sendError.stack);
+      return;
+    }
+
+    console.log(`${logPrefix} Resposta da função: ${JSON.stringify(response)}`);
 
     if (response.success) {
       // Mark as message sent
@@ -126,6 +146,7 @@ async function processCheckoutForRecovery(checkout) {
     }
   } catch (error) {
     console.error(`${logPrefix} ❌ Erro ao processar checkout:`, error.message);
+    console.error(`${logPrefix} Stack:`, error.stack);
   }
 }
 
