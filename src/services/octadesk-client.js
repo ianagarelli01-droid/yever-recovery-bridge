@@ -72,7 +72,16 @@ async function sendRecoveryTemplate(params) {
       content: {
         templateMessage: {
           id: templateId,
-          variables: [customerName, checkoutUrl]
+          variables: [
+            {
+              key: 'nome_do_cliente',
+              value: customerName
+            },
+            {
+              key: 'var-1',
+              value: checkoutUrl
+            }
+          ]
         }
       },
       options: {
