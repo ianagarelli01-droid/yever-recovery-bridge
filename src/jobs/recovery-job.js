@@ -46,14 +46,14 @@ function stopRecoveryJob() {
 /**
  * Main logic: find pending checkouts and send recovery messages
  */
-function runRecoveryCheck() {
+async function runRecoveryCheck() {
   const timestamp = new Date().toISOString();
   console.log(`[recovery-job] ⏰ Iniciando verificação em ${timestamp}`);
 
   try {
     // Find checkouts abandoned 60+ minutes ago
     const ABANDONED_MINUTES = 60;
-    const pendingCheckouts = db.findPendingCheckoutsOlderThan(ABANDONED_MINUTES);
+    const pendingCheckouts = await db.findPendingCheckoutsOlderThan(ABANDONED_MINUTES);
 
     if (!pendingCheckouts || pendingCheckouts.length === 0) {
       console.log(`[recovery-job] ✓ Nenhum checkout pendente para recuperar`);
@@ -64,7 +64,7 @@ function runRecoveryCheck() {
 
     // Process each checkout (serially to avoid rate limits)
     for (const checkout of pendingCheckouts) {
-      processCheckoutForRecovery(checkout);
+      await processCheckoutForRecovery(checkout);
     }
 
     console.log(`[recovery-job] ✓ Verificação finalizada`);
@@ -95,7 +95,7 @@ async function processCheckoutForRecovery(checkout) {
     }
 
     // Check for more recent checkout from same email/phone
-    const moreRecent = db.findMostRecentCheckoutByEmailOrPhone(
+    const moreRecent = await db.findMostRecentCheckoutByEmailOrPhone(
       checkout.customer_email,
       phoneE164
     );
@@ -119,7 +119,7 @@ async function processCheckoutForRecovery(checkout) {
 
     if (response.success) {
       // Mark as message sent
-      db.markMessageSent(checkout.id, response);
+      await db.markMessageSent(checkout.id, response);
       console.log(`${logPrefix} ✅ Mensagem enviada com sucesso`);
     } else {
       console.error(`${logPrefix} ❌ Falha ao enviar: ${JSON.stringify(response.error)}`);
@@ -169,9 +169,11 @@ function validateCheckoutForRecovery(checkout) {
 /**
  * Force a recovery check (for testing)
  */
-async function forceRecoveryCheckNow() {
+function forceRecoveryCheckNow() {
   console.log('[recovery-job] 🔄 Forçando verificação agora...');
-  await runRecoveryCheck();
+  runRecoveryCheck().catch((err) => {
+    console.error('[recovery-job] Erro ao forçar verificação:', err.message);
+  });
 }
 
 module.exports = {
