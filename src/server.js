@@ -9,6 +9,10 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const db = require('./db');
+const { classifyYeverEvent, eventToCheckoutRecord } = require('./services/webhook-router');
+const { normalizePhoneBR } = require('./services/normalize-phone');
+const { startRecoveryJob, stopRecoveryJob, forceRecoveryCheckNow } = require('./jobs/recovery-job');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -134,18 +138,50 @@ app.get('/health', (_req, res) => {
 });
 
 // Webhook principal da Yever
-// IMPORTANTE: nesta fase NÃO inferimos o nome dos eventos. Apenas registramos
-// tudo o que chega para análise posterior.
 app.post('/webhooks/yever', (req, res) => {
-  // Responde rápido para a Yever, depois processa o log de forma assíncrona.
+  // Responde rápido para a Yever, depois processa de forma assíncrona.
   res.status(200).json({ received: true });
 
   try {
     const filename = persistWebhook(req);
     appendAccessLog(`webhook Yever processado: ${filename}`);
+
+    // Classifica o evento (abandonado vs pago)
+    const classified = classifyYeverEvent(req.body);
+
+    if (!classified.valid) {
+      appendAccessLog(`[classify] Evento inválido: ${classified.error}`);
+      return;
+    }
+
+    appendAccessLog(`[classify] Tipo de evento: ${classified.type}`);
+
+    // Converte para formato de banco
+    const checkoutRecord = eventToCheckoutRecord(classified);
+    if (!checkoutRecord) {
+      appendAccessLog(`[classify] Falha ao converter para registro`);
+      return;
+    }
+
+    // Normaliza telefone
+    if (checkoutRecord.customer_phone) {
+      checkoutRecord.customer_phone_e164 = normalizePhoneBR(checkoutRecord.customer_phone);
+    }
+
+    // Grava no banco (assincronamente)
+    db.upsertCheckout(checkoutRecord).then((result) => {
+      appendAccessLog(`[db] Checkout gravado: ${checkoutRecord.yever_reference} (id=${result.id})`);
+
+      // Se for pagamento, marca como pago
+      if (classified.type === 'payment_approved') {
+        db.markCheckoutAsPaid(checkoutRecord.yever_reference, classified.paid_at);
+        appendAccessLog(`[db] Checkout marcado como PAGO: ${checkoutRecord.yever_reference}`);
+      }
+    }).catch((err) => {
+      console.error('[db] Erro ao gravar checkout:', err.message);
+    });
   } catch (err) {
-    // Não relança — já respondemos 200 para a Yever.
-    console.error('[webhook] erro ao persistir webhook Yever:', err);
+    console.error('[webhook] erro ao processar webhook Yever:', err);
   }
 });
 
@@ -158,7 +194,7 @@ app.get('/webhooks/yever', (_req, res) => {
   });
 });
 
-// Debug: listar payloads salvos
+// Debug: listar payloads salvos em arquivo
 app.get('/payloads', (_req, res) => {
   try {
     if (!fs.existsSync(PAYLOADS_DIR)) {
@@ -181,6 +217,32 @@ app.get('/payloads', (_req, res) => {
   }
 });
 
+// Debug: listar checkouts no banco
+app.get('/debug/checkouts', async (_req, res) => {
+  try {
+    const query = 'SELECT id, yever_checkout_id, customer_email, customer_phone_e164, status, message_sent_at FROM checkouts ORDER BY created_at DESC LIMIT 20';
+    const rows = await new Promise((resolve, reject) => {
+      db.getDb().all(query, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+    res.json({ count: rows.length, checkouts: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug: forçar execução do job agora
+app.post('/debug/force-recovery-check', async (_req, res) => {
+  try {
+    await forceRecoveryCheckNow();
+    res.json({ message: 'Recovery check forçado' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 404 padrão
 app.use((req, res) => {
   res.status(404).json({ error: 'not_found', path: req.originalUrl });
@@ -195,8 +257,35 @@ app.use((err, _req, res, _next) => {
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
-app.listen(PORT, () => {
-  appendAccessLog(`Yever Recovery Bridge ouvindo na porta ${PORT}`);
-  console.log(`Health:  http://localhost:${PORT}/health`);
-  console.log(`Webhook: http://localhost:${PORT}/webhooks/yever`);
+async function bootstrap() {
+  try {
+    // Initialize database
+    await db.initDb();
+    console.log('[bootstrap] ✓ Database initialized');
+
+    // Start recovery job
+    const jobInterval = parseInt(process.env.JOB_INTERVAL_MINUTES || '5', 10);
+    startRecoveryJob(jobInterval);
+
+    // Start server
+    app.listen(PORT, () => {
+      appendAccessLog(`Yever Recovery Bridge ouvindo na porta ${PORT}`);
+      console.log(`Health:  http://localhost:${PORT}/health`);
+      console.log(`Webhook: http://localhost:${PORT}/webhooks/yever`);
+      console.log(`Debug:   http://localhost:${PORT}/debug/checkouts`);
+    });
+  } catch (error) {
+    console.error('[bootstrap] ❌ Erro ao iniciar:', error.message);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('[bootstrap] SIGTERM recebido, encerrando...');
+  stopRecoveryJob();
+  await db.closeDb();
+  process.exit(0);
 });
+
+bootstrap();
