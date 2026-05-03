@@ -1,5 +1,6 @@
 // src/jobs/recovery-job.js
 // Scheduled job that runs every N minutes to find and recover abandoned checkouts
+// Implements cascading template sending: 1h, 24h, 36h
 
 const cron = require('node-cron');
 const db = require('../db');
@@ -11,7 +12,7 @@ let job = null;
 /**
  * Start the recovery job
  * Runs every 5 minutes by default (can be adjusted)
- * Looks for checkouts abandoned 60+ minutes ago
+ * Looks for checkouts and sends templates based on abandonment time
  */
 function startRecoveryJob(intervalMinutes = 5) {
   if (job) {
@@ -20,8 +21,6 @@ function startRecoveryJob(intervalMinutes = 5) {
   }
 
   // Cron expression: every N minutes
-  // Format: minute hour dayOfMonth month dayOfWeek
-  // "*/5 * * * *" = every 5 minutes
   const cronExpression = `*/${intervalMinutes} * * * *`;
 
   job = cron.schedule(cronExpression, async () => {
@@ -29,7 +28,7 @@ function startRecoveryJob(intervalMinutes = 5) {
   });
 
   console.log(`[recovery-job] Job agendado para rodar a cada ${intervalMinutes} minutos`);
-  console.log(`[recovery-job] Procurará checkouts abandonados há 60+ minutos`);
+  console.log('[recovery-job] Envio em cascata: 1h (rec_1h) → 24h (rec_24h) → 36h (rec_36h)');
 }
 
 /**
@@ -44,28 +43,34 @@ function stopRecoveryJob() {
 }
 
 /**
- * Main logic: find pending checkouts and send recovery messages
+ * Main logic: process all recovery templates in cascade
  */
 async function runRecoveryCheck() {
   const timestamp = new Date().toISOString();
   console.log(`[recovery-job] ⏰ Iniciando verificação em ${timestamp}`);
 
   try {
-    // Find checkouts abandoned 60+ minutes ago
-    const ABANDONED_MINUTES = 60;
-    const pendingCheckouts = await db.findPendingCheckoutsOlderThan(ABANDONED_MINUTES);
+    // Process templates in cascade order
+    await processRecoveryTemplate({
+      minutes: 60,
+      templateField: 'template_1h_sent_at',
+      envKey: 'OCTADESK_TEMPLATE_REC_1H',
+      label: '1h'
+    });
 
-    if (!pendingCheckouts || pendingCheckouts.length === 0) {
-      console.log(`[recovery-job] ✓ Nenhum checkout pendente para recuperar`);
-      return;
-    }
+    await processRecoveryTemplate({
+      minutes: 24 * 60,
+      templateField: 'template_24h_sent_at',
+      envKey: 'OCTADESK_TEMPLATE_REC_24H',
+      label: '24h'
+    });
 
-    console.log(`[recovery-job] 📦 Encontrados ${pendingCheckouts.length} checkouts para recuperar`);
-
-    // Process each checkout (serially to avoid rate limits)
-    for (const checkout of pendingCheckouts) {
-      await processCheckoutForRecovery(checkout);
-    }
+    await processRecoveryTemplate({
+      minutes: 36 * 60,
+      templateField: 'template_36h_sent_at',
+      envKey: 'OCTADESK_TEMPLATE_REC_36H',
+      label: '36h'
+    });
 
     console.log(`[recovery-job] ✓ Verificação finalizada`);
   } catch (error) {
@@ -74,10 +79,49 @@ async function runRecoveryCheck() {
 }
 
 /**
- * Process a single checkout for recovery (async because of HTTP call to Octadesk)
+ * Process recovery for a specific template at a specific time threshold
  */
-async function processCheckoutForRecovery(checkout) {
-  const logPrefix = `[recovery-job:${checkout.yever_checkout_id}]`;
+async function processRecoveryTemplate({ minutes, templateField, envKey, label }) {
+  const templateId = process.env[envKey];
+
+  if (!templateId) {
+    console.log(`[recovery-job] ⚠️  ${envKey} não configurado, pulando template ${label}`);
+    return;
+  }
+
+  console.log(`[recovery-job] 🔄 Processando template ${label} (${minutes} min)...`);
+
+  try {
+    const checkouts = await db.findPendingCheckoutsOlderThanForTemplate(minutes, templateField);
+
+    if (!checkouts || checkouts.length === 0) {
+      console.log(`[recovery-job] ✓ Nenhum checkout para template ${label}`);
+      return;
+    }
+
+    console.log(`[recovery-job] 📦 Encontrados ${checkouts.length} checkouts para template ${label}`);
+
+    // Process each checkout
+    for (const checkout of checkouts) {
+      await processCheckoutForTemplate({
+        checkout,
+        templateId,
+        templateField,
+        label
+      });
+    }
+
+    console.log(`[recovery-job] ✓ Processamento do template ${label} finalizado`);
+  } catch (error) {
+    console.error(`[recovery-job] ❌ Erro ao processar template ${label}:`, error.message);
+  }
+}
+
+/**
+ * Process a single checkout for a specific template
+ */
+async function processCheckoutForTemplate({ checkout, templateId, templateField, label }) {
+  const logPrefix = `[recovery-job:${label}:${checkout.yever_checkout_id}]`;
 
   try {
     // Validate prerequisites
@@ -100,21 +144,34 @@ async function processCheckoutForRecovery(checkout) {
 
     console.log(`${logPrefix} ✓ Telefone válido`);
 
-    // Check for more recent checkout from same email/phone
+    // Check if customer has any paid checkout
+    const hasPaidCheckout = await db.hasAnyPaidCheckoutForCustomer(
+      checkout.customer_email,
+      phoneE164
+    );
+
+    if (hasPaidCheckout) {
+      console.log(`${logPrefix} ⏭️  Cliente já pagou um carrinho, não enviar recuperação`);
+      return;
+    }
+
+    console.log(`${logPrefix} ✓ Cliente ainda não pagou nada`);
+
+    // Check if there's a more recent checkout
     const moreRecent = await db.findMostRecentCheckoutByEmailOrPhone(
       checkout.customer_email,
       phoneE164
     );
 
     if (moreRecent && moreRecent.id !== checkout.id && new Date(moreRecent.created_at) > new Date(checkout.created_at)) {
-      console.log(`${logPrefix} ⏭️  Checkout mais recente existe para este email/telefone`);
+      console.log(`${logPrefix} ⏭️  Checkout mais recente existe, não enviar para este`);
       return;
     }
 
-    console.log(`${logPrefix} ✓ Nenhum checkout mais recente`);
+    console.log(`${logPrefix} ✓ Este é o checkout mais recente do cliente`);
 
-    // Send recovery message
-    console.log(`${logPrefix} 📤 Enviando mensagem de recuperação...`);
+    // Send recovery message with appropriate template
+    console.log(`${logPrefix} 📤 Enviando mensagem com template ${label}...`);
     console.log(`${logPrefix} Parâmetros: phone=${phoneE164}, name=${checkout.customer_name}, url=${checkout.recovery_url}`);
 
     const dryRun = process.env.DRY_RUN === 'true';
@@ -127,6 +184,7 @@ async function processCheckoutForRecovery(checkout) {
         checkoutUrl: checkout.recovery_url,
         customerName: checkout.customer_name,
         checkoutId: checkout.yever_checkout_id,
+        templateId: templateId,
         dryRun
       });
     } catch (sendError) {
@@ -138,9 +196,9 @@ async function processCheckoutForRecovery(checkout) {
     console.log(`${logPrefix} Resposta da função: ${JSON.stringify(response)}`);
 
     if (response.success) {
-      // Mark as message sent
-      await db.markMessageSent(checkout.id, response);
-      console.log(`${logPrefix} ✅ Mensagem enviada com sucesso`);
+      // Mark template as sent
+      await db.markTemplateSent(checkout.id, templateField, response);
+      console.log(`${logPrefix} ✅ Mensagem com template ${label} enviada com sucesso`);
     } else {
       console.error(`${logPrefix} ❌ Falha ao enviar: ${JSON.stringify(response.error)}`);
     }
@@ -157,16 +215,6 @@ function validateCheckoutForRecovery(checkout) {
   // Status deve ser 'pending'
   if (checkout.status !== 'pending') {
     return { valid: false, reason: `Status é ${checkout.status}, não pending` };
-  }
-
-  // Não deve ter mensagem já enviada
-  if (checkout.message_sent_at) {
-    return { valid: false, reason: 'Mensagem já foi enviada' };
-  }
-
-  // Não deve estar pago
-  if (checkout.status === 'paid') {
-    return { valid: false, reason: 'Checkout já foi pago' };
   }
 
   // Telefone deve existir

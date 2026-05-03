@@ -11,6 +11,7 @@ const axios = require('axios');
  * @param {string} params.checkoutUrl - URL to recover the checkout
  * @param {string} params.customerName - Customer name for personalization
  * @param {string} params.checkoutId - Yever checkout ID for tracking
+ * @param {string} params.templateId - Octadesk template ID (optional, defaults to REC_1H)
  * @param {boolean} params.dryRun - If true, only log without sending
  */
 async function sendRecoveryTemplate(params) {
@@ -19,13 +20,14 @@ async function sendRecoveryTemplate(params) {
     checkoutUrl,
     customerName,
     checkoutId,
+    templateId: customTemplateId,
     dryRun = false
   } = params;
 
   const apiKey = process.env.OCTADESK_API_KEY;
   const baseUrl = process.env.OCTADESK_BASE_URL;
   const originPhone = process.env.OCTADESK_ORIGIN_PHONE;
-  const templateId = process.env.OCTADESK_TEMPLATE_REC_1H;
+  const templateId = customTemplateId || process.env.OCTADESK_TEMPLATE_REC_1H;
 
   // Validation
   if (!apiKey || !baseUrl || !originPhone || !templateId) {

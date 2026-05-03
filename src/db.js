@@ -63,6 +63,9 @@ function createTables() {
       abandoned_at TIMESTAMP,
       paid_at TIMESTAMP,
       message_sent_at TIMESTAMP,
+      template_1h_sent_at TIMESTAMP,
+      template_24h_sent_at TIMESTAMP,
+      template_36h_sent_at TIMESTAMP,
       octadesk_response JSONB,
       raw_payload JSONB,
       created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -303,6 +306,81 @@ function getAllCheckouts() {
 }
 
 /**
+ * Find pending checkouts older than X minutes that haven't received a specific template yet
+ * @param {number} minutes - Minutes to look back
+ * @param {string} templateField - Field name: template_1h_sent_at, template_24h_sent_at, etc
+ */
+function findPendingCheckoutsOlderThanForTemplate(minutes, templateField) {
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT * FROM checkouts
+      WHERE status = 'pending'
+        AND abandoned_at IS NOT NULL
+        AND abandoned_at < NOW() - INTERVAL '1 minute' * $1
+        AND ${templateField} IS NULL
+      ORDER BY abandoned_at ASC
+    `;
+
+    pool.query(sql, [minutes], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rows || []);
+      }
+    });
+  });
+}
+
+/**
+ * Check if customer has any paid checkout (by email or phone)
+ * @param {string} email - Customer email
+ * @param {string} phone - Customer phone in E.164 format
+ */
+function hasAnyPaidCheckoutForCustomer(email, phone) {
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT COUNT(*) as paid_count FROM checkouts
+      WHERE status = 'paid'
+        AND (customer_email = $1 OR customer_phone_e164 = $2)
+    `;
+
+    pool.query(sql, [email, phone], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        const paidCount = parseInt(result.rows[0]?.paid_count || 0, 10);
+        resolve(paidCount > 0);
+      }
+    });
+  });
+}
+
+/**
+ * Mark that a template was sent for a checkout
+ * @param {number} checkoutId - Checkout ID
+ * @param {string} templateField - Field name: template_1h_sent_at, template_24h_sent_at, etc
+ * @param {object} octadeskResponse - Response from Octadesk API
+ */
+function markTemplateSent(checkoutId, templateField, octadeskResponse) {
+  return new Promise((resolve, reject) => {
+    const sql = `
+      UPDATE checkouts
+      SET ${templateField} = CURRENT_TIMESTAMP,
+          updated_timestamp = CURRENT_TIMESTAMP
+      WHERE id = $1
+    `;
+
+    pool.query(sql, [checkoutId], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rowCount);
+      }
+    });
+  });
+}
+
+/**
  * Close database connection
  */
 function closeDb() {
@@ -329,8 +407,11 @@ module.exports = {
   closeDb,
   upsertCheckout,
   findPendingCheckoutsOlderThan,
+  findPendingCheckoutsOlderThanForTemplate,
   findMostRecentCheckoutByEmailOrPhone,
+  hasAnyPaidCheckoutForCustomer,
   markMessageSent,
+  markTemplateSent,
   markCheckoutAsPaid,
   getCheckoutByReference,
   getAllCheckouts
