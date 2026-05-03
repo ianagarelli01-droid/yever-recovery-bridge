@@ -168,8 +168,9 @@ app.post('/webhooks/yever', (req, res) => {
       checkoutRecord.customer_phone_e164 = normalizePhoneBR(checkoutRecord.customer_phone);
     }
 
-    // Grava no banco (assincronamente)
-    db.upsertCheckout(checkoutRecord).then((result) => {
+    // Grava no banco
+    try {
+      const result = db.upsertCheckout(checkoutRecord);
       appendAccessLog(`[db] Checkout gravado: ${checkoutRecord.yever_reference} (id=${result.id})`);
 
       // Se for pagamento, marca como pago
@@ -177,9 +178,9 @@ app.post('/webhooks/yever', (req, res) => {
         db.markCheckoutAsPaid(checkoutRecord.yever_reference, classified.paid_at);
         appendAccessLog(`[db] Checkout marcado como PAGO: ${checkoutRecord.yever_reference}`);
       }
-    }).catch((err) => {
+    } catch (err) {
       console.error('[db] Erro ao gravar checkout:', err.message);
-    });
+    }
   } catch (err) {
     console.error('[webhook] erro ao processar webhook Yever:', err);
   }
@@ -218,25 +219,19 @@ app.get('/payloads', (_req, res) => {
 });
 
 // Debug: listar checkouts no banco
-app.get('/debug/checkouts', async (_req, res) => {
+app.get('/debug/checkouts', (_req, res) => {
   try {
-    const query = 'SELECT id, yever_checkout_id, customer_email, customer_phone_e164, status, message_sent_at FROM checkouts ORDER BY created_at DESC LIMIT 20';
-    const rows = await new Promise((resolve, reject) => {
-      db.getDb().all(query, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-    res.json({ count: rows.length, checkouts: rows });
+    const checkouts = db.getAllCheckouts();
+    res.json({ count: checkouts.length, checkouts });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Debug: forçar execução do job agora
-app.post('/debug/force-recovery-check', async (_req, res) => {
+app.post('/debug/force-recovery-check', (_req, res) => {
   try {
-    await forceRecoveryCheckNow();
+    forceRecoveryCheckNow();
     res.json({ message: 'Recovery check forçado' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -257,10 +252,10 @@ app.use((err, _req, res, _next) => {
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
-async function bootstrap() {
+function bootstrap() {
   try {
     // Initialize database
-    await db.initDb();
+    db.initDb();
     console.log('[bootstrap] ✓ Database initialized');
 
     // Start recovery job

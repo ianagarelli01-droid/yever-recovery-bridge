@@ -46,25 +46,25 @@ function stopRecoveryJob() {
 /**
  * Main logic: find pending checkouts and send recovery messages
  */
-async function runRecoveryCheck() {
+function runRecoveryCheck() {
   const timestamp = new Date().toISOString();
   console.log(`[recovery-job] ⏰ Iniciando verificação em ${timestamp}`);
 
   try {
     // Find checkouts abandoned 60+ minutes ago
     const ABANDONED_MINUTES = 60;
-    const pendingCheckouts = await db.findPendingCheckoutsOlderThan(ABANDONED_MINUTES);
+    const pendingCheckouts = db.findPendingCheckoutsOlderThan(ABANDONED_MINUTES);
 
-    if (pendingCheckouts.length === 0) {
+    if (!pendingCheckouts || pendingCheckouts.length === 0) {
       console.log(`[recovery-job] ✓ Nenhum checkout pendente para recuperar`);
       return;
     }
 
     console.log(`[recovery-job] 📦 Encontrados ${pendingCheckouts.length} checkouts para recuperar`);
 
-    // Process each checkout
+    // Process each checkout (serially to avoid rate limits)
     for (const checkout of pendingCheckouts) {
-      await processCheckoutForRecovery(checkout);
+      processCheckoutForRecovery(checkout);
     }
 
     console.log(`[recovery-job] ✓ Verificação finalizada`);
@@ -74,7 +74,7 @@ async function runRecoveryCheck() {
 }
 
 /**
- * Process a single checkout for recovery
+ * Process a single checkout for recovery (async because of HTTP call to Octadesk)
  */
 async function processCheckoutForRecovery(checkout) {
   const logPrefix = `[recovery-job:${checkout.yever_checkout_id}]`;
@@ -95,7 +95,7 @@ async function processCheckoutForRecovery(checkout) {
     }
 
     // Check for more recent checkout from same email/phone
-    const moreRecent = await db.findMostRecentCheckoutByEmailOrPhone(
+    const moreRecent = db.findMostRecentCheckoutByEmailOrPhone(
       checkout.customer_email,
       phoneE164
     );
@@ -119,7 +119,7 @@ async function processCheckoutForRecovery(checkout) {
 
     if (response.success) {
       // Mark as message sent
-      await db.markMessageSent(checkout.id, response);
+      db.markMessageSent(checkout.id, response);
       console.log(`${logPrefix} ✅ Mensagem enviada com sucesso`);
     } else {
       console.error(`${logPrefix} ❌ Falha ao enviar: ${JSON.stringify(response.error)}`);
