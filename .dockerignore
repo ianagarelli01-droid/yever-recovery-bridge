@@ -1,0 +1,8 @@
+node_modules
+.env
+.git
+.gitignore
+logs/payloads/*.json
+logs/access.log
+.DS_Store
+README.md

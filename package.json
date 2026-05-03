@@ -1,0 +1,28 @@
+{
+  "name": "yever-recovery-bridge",
+  "version": "0.1.0",
+  "description": "Backend para recuperação de checkout abandonado da Yever (Fase 1: apenas captura de webhooks).",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "keywords": [
+    "yever",
+    "shopify",
+    "octadesk",
+    "checkout",
+    "recuperacao",
+    "webhook"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

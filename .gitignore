@@ -1,0 +1,5 @@
+node_modules/
+.env
+logs/payloads/*.json
+logs/access.log
+.DS_Store
