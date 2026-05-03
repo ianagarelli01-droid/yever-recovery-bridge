@@ -185,6 +185,7 @@ async function processCheckoutForTemplate({ checkout, templateId, templateField,
         customerName: checkout.customer_name,
         checkoutId: checkout.yever_checkout_id,
         templateId: templateId,
+        templateLabel: label,
         dryRun
       });
     } catch (sendError) {

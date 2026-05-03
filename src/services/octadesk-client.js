@@ -4,6 +4,30 @@
 const axios = require('axios');
 
 /**
+ * Build checkout URL with UTM parameters for analytics tracking
+ * @param {string} baseUrl - Base checkout URL
+ * @param {string} templateLabel - Template label (1h, 24h, 36h)
+ * @returns {string} URL with UTM parameters
+ */
+function buildUrlWithUtm(baseUrl, templateLabel = '1h') {
+  try {
+    const url = new URL(baseUrl);
+
+    // Add UTM parameters
+    url.searchParams.set('utm_source', 'whatsapp');
+    url.searchParams.set('utm_medium', 'octadesk');
+    url.searchParams.set('utm_campaign', `cart_recovery_${templateLabel}`);
+    url.searchParams.set('utm_content', `rec_${templateLabel}`);
+
+    return url.toString();
+  } catch (error) {
+    // If URL parsing fails, return original URL
+    console.warn('[octadesk] Erro ao parsear URL para UTM:', error.message);
+    return baseUrl;
+  }
+}
+
+/**
  * Send recovery message template via Octadesk
  *
  * @param {Object} params
@@ -12,6 +36,7 @@ const axios = require('axios');
  * @param {string} params.customerName - Customer name for personalization
  * @param {string} params.checkoutId - Yever checkout ID for tracking
  * @param {string} params.templateId - Octadesk template ID (optional, defaults to REC_1H)
+ * @param {string} params.templateLabel - Template label for UTM (1h, 24h, 36h) - optional
  * @param {boolean} params.dryRun - If true, only log without sending
  */
 async function sendRecoveryTemplate(params) {
@@ -21,6 +46,7 @@ async function sendRecoveryTemplate(params) {
     customerName,
     checkoutId,
     templateId: customTemplateId,
+    templateLabel = '1h',
     dryRun = false
   } = params;
 
@@ -40,12 +66,15 @@ async function sendRecoveryTemplate(params) {
 
   const logPrefix = `[octadesk:${checkoutId}]`;
 
+  // Build URL with UTM parameters
+  const checkoutUrlWithUtm = buildUrlWithUtm(checkoutUrl, templateLabel);
+
   // Dry run mode
   if (dryRun) {
     console.log(`${logPrefix} DRY RUN - Would send recovery message`);
     console.log(`${logPrefix} To: ${phone}`);
     console.log(`${logPrefix} Name: ${customerName}`);
-    console.log(`${logPrefix} URL: ${checkoutUrl}`);
+    console.log(`${logPrefix} URL: ${checkoutUrlWithUtm}`);
     return {
       dryRun: true,
       success: true,
@@ -81,7 +110,7 @@ async function sendRecoveryTemplate(params) {
             },
             {
               key: 'var-1',
-              value: checkoutUrl
+              value: checkoutUrlWithUtm
             }
           ]
         }
