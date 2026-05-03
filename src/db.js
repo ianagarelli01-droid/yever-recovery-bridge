@@ -1,34 +1,42 @@
 // src/db.js
-// Database initialization using better-sqlite3 (faster, synchronous)
+// Database initialization using PostgreSQL (via DATABASE_URL env var)
 
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
+const { Pool } = require('pg');
 
-let db = null;
+let pool = null;
 
 /**
- * Initialize database and create tables if they don't exist
+ * Initialize database connection pool
  */
-function initDb(dbPath = null) {
-  // Use in-memory DB for testing or file-based for persistence
-  const actualPath = dbPath || path.join(__dirname, '..', 'data', 'yever.db');
+function initDb() {
+  const databaseUrl = process.env.DATABASE_URL;
 
-  // Ensure directory exists
-  const dir = path.dirname(actualPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL environment variable is not set');
   }
 
-  db = new Database(actualPath);
-  console.log(`[db] Conectado ao banco: ${actualPath}`);
+  pool = new Pool({
+    connectionString: databaseUrl,
+    ssl: {
+      rejectUnauthorized: false // Required for Railway
+    }
+  });
 
-  // Enable foreign keys
-  db.pragma('journal_mode = WAL');
+  console.log('[db] Pool de conexões criado');
 
+  // Test connection
+  pool.query('SELECT NOW()', (err, res) => {
+    if (err) {
+      console.error('[db] ❌ Erro ao conectar:', err.message);
+    } else {
+      console.log('[db] ✓ Conectado ao Postgres');
+    }
+  });
+
+  // Create tables
   createTables();
 
-  return db;
+  return pool;
 }
 
 /**
@@ -37,28 +45,28 @@ function initDb(dbPath = null) {
 function createTables() {
   const sql = `
     CREATE TABLE IF NOT EXISTS checkouts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       yever_checkout_id TEXT UNIQUE NOT NULL,
       yever_reference TEXT UNIQUE NOT NULL,
       customer_name TEXT,
       customer_email TEXT,
       customer_phone TEXT,
       customer_phone_e164 TEXT,
-      value_total REAL,
+      value_total NUMERIC,
       currency TEXT DEFAULT 'BRL',
-      products TEXT,
+      products JSONB,
       recovery_url TEXT,
       last_step TEXT,
       order_status TEXT,
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'paid', 'recovered_message_sent', 'ignored')),
-      created_at TEXT,
-      abandoned_at TEXT,
-      paid_at TEXT,
-      message_sent_at TEXT,
-      octadesk_response TEXT,
-      raw_payload TEXT,
-      created_timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP,
+      abandoned_at TIMESTAMP,
+      paid_at TIMESTAMP,
+      message_sent_at TIMESTAMP,
+      octadesk_response JSONB,
+      raw_payload JSONB,
+      created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE INDEX IF NOT EXISTS idx_checkouts_status ON checkouts(status);
@@ -68,196 +76,256 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_checkouts_abandoned_at ON checkouts(abandoned_at);
   `;
 
-  try {
-    db.exec(sql);
-    console.log('[db] Tabelas criadas com sucesso');
-  } catch (err) {
-    console.error('[db] Erro ao criar tabelas:', err.message);
-    throw err;
-  }
+  pool.query(sql, (err) => {
+    if (err) {
+      console.error('[db] Erro ao criar tabelas:', err.message);
+    } else {
+      console.log('[db] ✓ Tabelas criadas com sucesso');
+    }
+  });
 }
 
 /**
- * Get database instance
+ * Get pool instance
  */
-function getDb() {
-  if (!db) {
+function getPool() {
+  if (!pool) {
     throw new Error('Database not initialized. Call initDb() first.');
   }
-  return db;
+  return pool;
 }
 
 /**
  * Insert or update a checkout
  */
 function upsertCheckout(checkoutData) {
-  const {
-    yever_checkout_id,
-    yever_reference,
-    customer_name,
-    customer_email,
-    customer_phone,
-    customer_phone_e164,
-    value_total,
-    currency,
-    products,
-    recovery_url,
-    last_step,
-    order_status,
-    status,
-    created_at,
-    abandoned_at,
-    paid_at,
-    raw_payload
-  } = checkoutData;
+  return new Promise((resolve, reject) => {
+    const {
+      yever_checkout_id,
+      yever_reference,
+      customer_name,
+      customer_email,
+      customer_phone,
+      customer_phone_e164,
+      value_total,
+      currency,
+      products,
+      recovery_url,
+      last_step,
+      order_status,
+      status,
+      created_at,
+      abandoned_at,
+      paid_at,
+      raw_payload
+    } = checkoutData;
 
-  const sql = `
-    INSERT INTO checkouts (
-      yever_checkout_id, yever_reference, customer_name, customer_email,
-      customer_phone, customer_phone_e164, value_total, currency, products,
-      recovery_url, last_step, order_status, status, created_at,
-      abandoned_at, paid_at, raw_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(yever_reference) DO UPDATE SET
-      customer_name = excluded.customer_name,
-      customer_email = excluded.customer_email,
-      customer_phone = excluded.customer_phone,
-      customer_phone_e164 = excluded.customer_phone_e164,
-      value_total = excluded.value_total,
-      products = excluded.products,
-      recovery_url = excluded.recovery_url,
-      last_step = excluded.last_step,
-      order_status = excluded.order_status,
-      status = excluded.status,
-      abandoned_at = excluded.abandoned_at,
-      paid_at = excluded.paid_at,
-      updated_timestamp = CURRENT_TIMESTAMP,
-      raw_payload = excluded.raw_payload
-  `;
+    const sql = `
+      INSERT INTO checkouts (
+        yever_checkout_id, yever_reference, customer_name, customer_email,
+        customer_phone, customer_phone_e164, value_total, currency, products,
+        recovery_url, last_step, order_status, status, created_at,
+        abandoned_at, paid_at, raw_payload
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      ON CONFLICT(yever_reference) DO UPDATE SET
+        customer_name = EXCLUDED.customer_name,
+        customer_email = EXCLUDED.customer_email,
+        customer_phone = EXCLUDED.customer_phone,
+        customer_phone_e164 = EXCLUDED.customer_phone_e164,
+        value_total = EXCLUDED.value_total,
+        products = EXCLUDED.products,
+        recovery_url = EXCLUDED.recovery_url,
+        last_step = EXCLUDED.last_step,
+        order_status = EXCLUDED.order_status,
+        status = EXCLUDED.status,
+        abandoned_at = EXCLUDED.abandoned_at,
+        paid_at = EXCLUDED.paid_at,
+        updated_timestamp = CURRENT_TIMESTAMP,
+        raw_payload = EXCLUDED.raw_payload
+      RETURNING id
+    `;
 
-  const stmt = db.prepare(sql);
-  const result = stmt.run(
-    yever_checkout_id,
-    yever_reference,
-    customer_name,
-    customer_email,
-    customer_phone,
-    customer_phone_e164,
-    value_total,
-    currency,
-    JSON.stringify(products),
-    recovery_url,
-    last_step,
-    order_status,
-    status,
-    created_at,
-    abandoned_at,
-    paid_at,
-    JSON.stringify(raw_payload)
-  );
+    const params = [
+      yever_checkout_id,
+      yever_reference,
+      customer_name,
+      customer_email,
+      customer_phone,
+      customer_phone_e164,
+      value_total,
+      currency,
+      products ? JSON.stringify(products) : null,
+      recovery_url,
+      last_step,
+      order_status,
+      status,
+      created_at,
+      abandoned_at,
+      paid_at,
+      raw_payload ? JSON.stringify(raw_payload) : null
+    ];
 
-  return { id: result.lastInsertRowid, changes: result.changes };
+    pool.query(sql, params, (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        const id = result.rows[0]?.id || null;
+        resolve({ id, changes: result.rowCount });
+      }
+    });
+  });
 }
 
 /**
  * Find pending checkouts older than given minutes
  */
 function findPendingCheckoutsOlderThan(minutes) {
-  const sql = `
-    SELECT * FROM checkouts
-    WHERE status = 'pending'
-      AND abandoned_at IS NOT NULL
-      AND message_sent_at IS NULL
-      AND datetime(abandoned_at) < datetime('now', '-' || ? || ' minutes')
-    ORDER BY abandoned_at ASC
-  `;
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT * FROM checkouts
+      WHERE status = 'pending'
+        AND abandoned_at IS NOT NULL
+        AND message_sent_at IS NULL
+        AND abandoned_at < NOW() - INTERVAL '1 minute' * $1
+      ORDER BY abandoned_at ASC
+    `;
 
-  const stmt = db.prepare(sql);
-  return stmt.all(minutes);
+    pool.query(sql, [minutes], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rows || []);
+      }
+    });
+  });
 }
 
 /**
  * Find most recent checkout for email/phone
  */
 function findMostRecentCheckoutByEmailOrPhone(email, phone) {
-  const sql = `
-    SELECT * FROM checkouts
-    WHERE (customer_email = ? OR customer_phone_e164 = ?)
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT * FROM checkouts
+      WHERE (customer_email = $1 OR customer_phone_e164 = $2)
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
 
-  const stmt = db.prepare(sql);
-  return stmt.get(email, phone) || null;
+    pool.query(sql, [email, phone], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rows[0] || null);
+      }
+    });
+  });
 }
 
 /**
  * Update checkout status and message_sent_at
  */
 function markMessageSent(checkoutId, octadeskResponse) {
-  const sql = `
-    UPDATE checkouts
-    SET status = 'recovered_message_sent',
-        message_sent_at = CURRENT_TIMESTAMP,
-        octadesk_response = ?
-    WHERE id = ?
-  `;
+  return new Promise((resolve, reject) => {
+    const sql = `
+      UPDATE checkouts
+      SET status = 'recovered_message_sent',
+          message_sent_at = CURRENT_TIMESTAMP,
+          octadesk_response = $1
+      WHERE id = $2
+    `;
 
-  const stmt = db.prepare(sql);
-  const result = stmt.run(JSON.stringify(octadeskResponse), checkoutId);
-  return result.changes;
+    pool.query(sql, [octadeskResponse ? JSON.stringify(octadeskResponse) : null, checkoutId], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rowCount);
+      }
+    });
+  });
 }
 
 /**
  * Mark checkout as paid (update status)
  */
 function markCheckoutAsPaid(yeverReference, paidAt) {
-  const sql = `
-    UPDATE checkouts
-    SET status = 'paid',
-        paid_at = ?,
-        updated_timestamp = CURRENT_TIMESTAMP
-    WHERE yever_reference = ?
-  `;
+  return new Promise((resolve, reject) => {
+    const sql = `
+      UPDATE checkouts
+      SET status = 'paid',
+          paid_at = $1,
+          updated_timestamp = CURRENT_TIMESTAMP
+      WHERE yever_reference = $2
+    `;
 
-  const stmt = db.prepare(sql);
-  const result = stmt.run(paidAt, yeverReference);
-  return result.changes;
+    pool.query(sql, [paidAt, yeverReference], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rowCount);
+      }
+    });
+  });
 }
 
 /**
  * Get checkout by yever_reference
  */
 function getCheckoutByReference(yeverReference) {
-  const sql = `SELECT * FROM checkouts WHERE yever_reference = ?`;
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM checkouts WHERE yever_reference = $1`;
 
-  const stmt = db.prepare(sql);
-  return stmt.get(yeverReference) || null;
+    pool.query(sql, [yeverReference], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rows[0] || null);
+      }
+    });
+  });
 }
 
 /**
  * Get all checkouts (for debug)
  */
 function getAllCheckouts() {
-  const sql = `SELECT * FROM checkouts ORDER BY created_at DESC LIMIT 50`;
-  const stmt = db.prepare(sql);
-  return stmt.all();
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM checkouts ORDER BY created_at DESC LIMIT 50`;
+
+    pool.query(sql, (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result.rows || []);
+      }
+    });
+  });
 }
 
 /**
  * Close database connection
  */
 function closeDb() {
-  if (db) {
-    db.close();
-    console.log('[db] Conexão fechada');
-    db = null;
-  }
+  return new Promise((resolve, reject) => {
+    if (pool) {
+      pool.end((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          console.log('[db] Conexão fechada');
+          pool = null;
+          resolve();
+        }
+      });
+    } else {
+      resolve();
+    }
+  });
 }
 
 module.exports = {
   initDb,
-  getDb,
+  getPool,
   closeDb,
   upsertCheckout,
   findPendingCheckoutsOlderThan,

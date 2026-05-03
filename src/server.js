@@ -168,19 +168,20 @@ app.post('/webhooks/yever', (req, res) => {
       checkoutRecord.customer_phone_e164 = normalizePhoneBR(checkoutRecord.customer_phone);
     }
 
-    // Grava no banco
-    try {
-      const result = db.upsertCheckout(checkoutRecord);
-      appendAccessLog(`[db] Checkout gravado: ${checkoutRecord.yever_reference} (id=${result.id})`);
+    // Grava no banco (assincronamente)
+    db.upsertCheckout(checkoutRecord)
+      .then((result) => {
+        appendAccessLog(`[db] Checkout gravado: ${checkoutRecord.yever_reference} (id=${result.id})`);
 
-      // Se for pagamento, marca como pago
-      if (classified.type === 'payment_approved') {
-        db.markCheckoutAsPaid(checkoutRecord.yever_reference, classified.paid_at);
-        appendAccessLog(`[db] Checkout marcado como PAGO: ${checkoutRecord.yever_reference}`);
-      }
-    } catch (err) {
-      console.error('[db] Erro ao gravar checkout:', err.message);
-    }
+        // Se for pagamento, marca como pago
+        if (classified.type === 'payment_approved') {
+          db.markCheckoutAsPaid(checkoutRecord.yever_reference, classified.paid_at);
+          appendAccessLog(`[db] Checkout marcado como PAGO: ${checkoutRecord.yever_reference}`);
+        }
+      })
+      .catch((err) => {
+        console.error('[db] Erro ao gravar checkout:', err.message);
+      });
   } catch (err) {
     console.error('[webhook] erro ao processar webhook Yever:', err);
   }
@@ -219,9 +220,9 @@ app.get('/payloads', (_req, res) => {
 });
 
 // Debug: listar checkouts no banco
-app.get('/debug/checkouts', (_req, res) => {
+app.get('/debug/checkouts', async (_req, res) => {
   try {
-    const checkouts = db.getAllCheckouts();
+    const checkouts = await db.getAllCheckouts();
     res.json({ count: checkouts.length, checkouts });
   } catch (err) {
     res.status(500).json({ error: err.message });
